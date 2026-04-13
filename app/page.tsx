@@ -26,6 +26,7 @@ interface LatLng {
 interface Hub {
   _id: string;
   hubName: string;
+  description?: string;
   polygon: LatLng[];
   createdAt: string;
 }
@@ -56,6 +57,8 @@ export default function HubMappingPage() {
   // Edit
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const editPolygonRef = useRef<google.maps.Polygon | null>(null);
   const [editSaving, setEditSaving] = useState(false);
 
   // Delete confirm
@@ -68,6 +71,7 @@ export default function HubMappingPage() {
   // Create mode
   const [mode, setMode] = useState<"view" | "create">("view");
   const [hubName, setHubName] = useState("");
+  const [hubDescription, setHubDescription] = useState("");
   const [polygon, setPolygon] = useState<LatLng[]>([]);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -162,12 +166,13 @@ export default function HubMappingPage() {
       const res = await fetch("/api/hubs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hubName: hubName.trim(), polygon }),
+        body: JSON.stringify({ hubName: hubName.trim(), polygon, description: hubDescription.trim() }),
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.message ?? "Unknown error");
       setMessage({ type: "success", text: `"${hubName.trim()}" saved!` });
       setHubName("");
+      setHubDescription("");
       handleClear();
       fetchHubs();
       setMode("view");
@@ -190,6 +195,7 @@ export default function HubMappingPage() {
     setMessage(null);
     handleClear();
     setHubName("");
+    setHubDescription("");
     setPanelOpen(false);
   };
 
@@ -205,30 +211,63 @@ export default function HubMappingPage() {
     e.stopPropagation();
     setEditingId(hub._id);
     setEditName(hub.hubName);
+    setEditDescription(hub.description ?? "");
     setDeletingId(null);
+    if (mapRef.current && isLoaded) {
+      const bounds = new google.maps.LatLngBounds();
+      hub.polygon.forEach((p) => bounds.extend(new google.maps.LatLng(p.lat, p.lng)));
+      mapRef.current.fitBounds(bounds, 80);
+    }
   };
 
   const cancelEdit = () => {
     setEditingId(null);
     setEditName("");
+    setEditDescription("");
+    editPolygonRef.current = null;
   };
 
   const handleRename = async (id: string) => {
     if (!editName.trim()) return;
     setEditSaving(true);
     try {
+      let updatedPolygon: LatLng[] | undefined;
+      if (editPolygonRef.current) {
+        const path = editPolygonRef.current.getPath();
+        updatedPolygon = [];
+        for (let i = 0; i < path.getLength(); i++) {
+          const pt = path.getAt(i);
+          updatedPolygon.push({ lat: pt.lat(), lng: pt.lng() });
+        }
+      }
       const res = await fetch(`/api/hubs/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hubName: editName.trim() }),
+        body: JSON.stringify({
+          hubName: editName.trim(),
+          description: editDescription.trim(),
+          ...(updatedPolygon ? { polygon: updatedPolygon } : {}),
+        }),
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.message ?? "Unknown error");
       setHubs((prev) =>
-        prev.map((h) => (h._id === id ? { ...h, hubName: editName.trim() } : h))
+        prev.map((h) => (h._id === id ? {
+          ...h,
+          hubName: editName.trim(),
+          description: editDescription.trim(),
+          ...(updatedPolygon ? { polygon: updatedPolygon } : {}),
+        } : h))
       );
-      if (selectedHub?._id === id) setSelectedHub((prev) => prev && { ...prev, hubName: editName.trim() });
+      if (selectedHub?._id === id) setSelectedHub((prev) => prev && {
+        ...prev,
+        hubName: editName.trim(),
+        description: editDescription.trim(),
+        ...(updatedPolygon ? { polygon: updatedPolygon } : {}),
+      });
       setEditingId(null);
+      setEditDescription("");
+      editPolygonRef.current = null;
     } catch {
       // silently keep editing open so user can retry
     } finally {
@@ -394,9 +433,14 @@ export default function HubMappingPage() {
                           </span>
                         </div>
                       )}
+                      {!isEditing && !isConfirmingDelete && hub.description && (
+                        <p className="text-xs text-gray-500 mt-1.5 pl-4 leading-relaxed line-clamp-2">{hub.description}</p>
+                      )}
                       {isEditing && (
                         <div className="mt-2 space-y-2">
-                          <input autoFocus type="text" value={editName} onChange={(e) => setEditName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") handleRename(hub._id); if (e.key === "Escape") cancelEdit(); }} className="w-full border border-blue-400 rounded-lg px-3 py-1.5 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400" />
+                          <input autoFocus type="text" value={editName} onChange={(e) => setEditName(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") cancelEdit(); }} className="w-full border border-blue-400 rounded-lg px-3 py-1.5 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400" placeholder="Hub name" />
+                          <textarea value={editDescription} onChange={(e) => setEditDescription(e.target.value)} rows={3} placeholder="Description (optional)" className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none" />
+                          <p className="text-xs text-blue-600 bg-blue-50 border border-blue-100 rounded-lg px-2 py-1.5">Drag polygon vertices on the map to reshape the boundary.</p>
                           <div className="flex gap-2">
                             <button onClick={() => handleRename(hub._id)} disabled={editSaving || !editName.trim()} className="flex-1 bg-blue-600 text-white text-xs font-medium py-1.5 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition">{editSaving ? "Saving…" : "Save"}</button>
                             <button onClick={cancelEdit} className="flex-1 border border-gray-200 text-gray-500 text-xs font-medium py-1.5 rounded-lg hover:bg-gray-50 transition">Cancel</button>
@@ -428,6 +472,10 @@ export default function HubMappingPage() {
               <div>
                 <label htmlFor="hub-name" className="block text-xs font-semibold text-gray-600 mb-1">Hub Name <span className="text-red-500">*</span></label>
                 <input id="hub-name" type="text" placeholder="e.g. Mumbai North Hub" value={hubName} onChange={(e) => setHubName(e.target.value)} className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-800 placeholder-gray-400 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label htmlFor="hub-desc" className="block text-xs font-semibold text-gray-600 mb-1">Description</label>
+                <textarea id="hub-desc" rows={3} placeholder="Optional notes…" value={hubDescription} onChange={(e) => setHubDescription(e.target.value)} className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-800 placeholder-gray-400 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
               </div>
               {polygon.length > 0 && (
                 <div className="flex items-center justify-between text-xs bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-green-700">
@@ -461,16 +509,32 @@ export default function HubMappingPage() {
       <div className="flex-1 relative">
         {isLoaded ? (
           <GoogleMap mapContainerStyle={MAP_CONTAINER_STYLE} center={DEFAULT_CENTER} zoom={5} onLoad={onMapLoad} options={{ streetViewControl: false, mapTypeControlOptions: { position: 3 } }}>
-            {hubs.map((hub, idx) => (
-              <Polygon key={hub._id} paths={hub.polygon}
-                options={{ fillColor: COLORS[idx % COLORS.length], fillOpacity: selectedHub?._id === hub._id ? 0.5 : 0.25, strokeColor: COLORS[idx % COLORS.length], strokeWeight: selectedHub?._id === hub._id ? 3 : 2 }}
-                onClick={() => focusHub(hub)}
-              />
-            ))}
+            {hubs.map((hub, idx) => {
+              const isCurrentlyEditing = editingId === hub._id;
+              return (
+                <Polygon
+                  key={isCurrentlyEditing ? `${hub._id}-edit` : hub._id}
+                  paths={hub.polygon}
+                  options={{
+                    fillColor: isCurrentlyEditing ? "#F59E0B" : COLORS[idx % COLORS.length],
+                    fillOpacity: isCurrentlyEditing ? 0.35 : selectedHub?._id === hub._id ? 0.5 : 0.25,
+                    strokeColor: isCurrentlyEditing ? "#D97706" : COLORS[idx % COLORS.length],
+                    strokeWeight: isCurrentlyEditing ? 3 : selectedHub?._id === hub._id ? 3 : 2,
+                    strokeOpacity: isCurrentlyEditing ? 1 : 0.8,
+                    editable: isCurrentlyEditing,
+                  }}
+                  onLoad={isCurrentlyEditing ? (poly) => { editPolygonRef.current = poly; } : undefined}
+                  onClick={() => !isCurrentlyEditing && focusHub(hub)}
+                />
+              );
+            })}
             {selectedHub && (
               <InfoWindow position={polygonCenter(selectedHub.polygon)} onCloseClick={() => setSelectedHub(null)}>
-                <div className="text-sm min-w-[140px]">
+                <div className="text-sm min-w-35">
                   <p className="font-bold text-gray-800 mb-0.5">{selectedHub.hubName}</p>
+                  {selectedHub.description && (
+                    <p className="text-gray-600 text-xs mb-1">{selectedHub.description}</p>
+                  )}
                   <p className="text-gray-500 text-xs">{selectedHub.polygon.length} points</p>
                   <p className="text-gray-500 text-xs">{new Date(selectedHub.createdAt).toLocaleDateString()}</p>
                 </div>

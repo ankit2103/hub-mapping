@@ -7,6 +7,7 @@ export interface ILatLng {
 
 export interface IHub extends Document {
   hubName: string;
+  description?: string;
   polygon: ILatLng[];
   createdAt: Date;
   updatedAt: Date;
@@ -23,6 +24,7 @@ const LatLngSchema = new Schema<ILatLng>(
 const HubSchema = new Schema<IHub>(
   {
     hubName: { type: String, required: true, trim: true },
+    description: { type: String, default: "" },
     polygon: { type: [LatLngSchema], required: true, validate: [(arr: ILatLng[]) => arr.length >= 3, "A polygon must have at least 3 points"] },
   },
   { timestamps: true }

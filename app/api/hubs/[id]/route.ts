@@ -8,7 +8,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   try {
     const { id } = await params;
     const body = await req.json();
-    const { hubName } = body;
+    const { hubName, description, polygon } = body;
 
     if (!hubName || typeof hubName !== "string" || hubName.trim() === "") {
       return NextResponse.json(
@@ -17,10 +17,28 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       );
     }
 
+    const update: Record<string, unknown> = { hubName: hubName.trim() };
+    if (typeof description === "string") update.description = description.trim();
+    if (Array.isArray(polygon) && polygon.length >= 3) {
+      const isValid = polygon.every(
+        (p: unknown) =>
+          typeof p === "object" && p !== null &&
+          typeof (p as Record<string, unknown>).lat === "number" &&
+          typeof (p as Record<string, unknown>).lng === "number"
+      );
+      if (!isValid) {
+        return NextResponse.json(
+          { success: false, message: "Each polygon point must have numeric lat and lng" },
+          { status: 400 }
+        );
+      }
+      update.polygon = polygon;
+    }
+
     await connectDB();
     const hub = await Hub.findByIdAndUpdate(
       id,
-      { hubName: hubName.trim() },
+      update,
       { new: true }
     );
 

@@ -19,7 +19,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { hubName, polygon } = body;
+    const { hubName, polygon, description } = body;
 
     if (!hubName || typeof hubName !== "string" || hubName.trim() === "") {
       return NextResponse.json(
@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
     }
 
     await connectDB();
-    const hub = await Hub.create({ hubName: hubName.trim(), polygon });
+    const hub = await Hub.create({ hubName: hubName.trim(), polygon, description: typeof description === "string" ? description.trim() : "" });
     return NextResponse.json({ success: true, data: hub }, { status: 201 });
   } catch (error) {
     console.error("POST /api/hubs error:", error);
