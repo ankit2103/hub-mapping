@@ -5,7 +5,6 @@ import {
   GoogleMap,
   DrawingManager,
   Polygon,
-  InfoWindow,
   StandaloneSearchBox,
 } from "@react-google-maps/api";
 import { useMaps } from "@/components/GoogleMapsProvider";
@@ -31,10 +30,25 @@ interface Hub {
   createdAt: string;
 }
 
-function polygonCenter(polygon: LatLng[]): LatLng {
-  const lat = polygon.reduce((s, p) => s + p.lat, 0) / polygon.length;
-  const lng = polygon.reduce((s, p) => s + p.lng, 0) / polygon.length;
-  return { lat, lng };
+function computeAreaKm2(polygon: LatLng[]): string {
+  try {
+    const path = polygon.map((p) => new google.maps.LatLng(p.lat, p.lng));
+    const sqM = google.maps.geometry.spherical.computeArea(path);
+    return (sqM / 1_000_000).toFixed(1);
+  } catch {
+    return "–";
+  }
+}
+
+function computePerimeterKm(polygon: LatLng[]): string {
+  try {
+    const path = polygon.map((p) => new google.maps.LatLng(p.lat, p.lng));
+    const closed = [...path, path[0]];
+    const m = google.maps.geometry.spherical.computeLength(closed);
+    return (m / 1000).toFixed(1);
+  } catch {
+    return "–";
+  }
 }
 
 export default function HubMappingPage() {
@@ -64,6 +78,9 @@ export default function HubMappingPage() {
   // Delete confirm
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteWorking, setDeleteWorking] = useState(false);
+
+  // Info modal delete confirm
+  const [infoModalDeleteConfirm, setInfoModalDeleteConfirm] = useState(false);
 
   // Mobile panel
   const [panelOpen, setPanelOpen] = useState(false);
@@ -201,10 +218,22 @@ export default function HubMappingPage() {
 
   const focusHub = (hub: Hub) => {
     setSelectedHub(hub);
+    setInfoModalDeleteConfirm(false);
     if (!mapRef.current || !isLoaded) return;
     const bounds = new google.maps.LatLngBounds();
     hub.polygon.forEach((p) => bounds.extend(new google.maps.LatLng(p.lat, p.lng)));
-    mapRef.current.fitBounds(bounds);
+    const map = mapRef.current;
+    const center = bounds.getCenter();
+    // Step 1: pan smoothly to center
+    map.panTo(center);
+    // Step 2: once pan settles, zoom in to fit the polygon tightly
+    google.maps.event.addListenerOnce(map, "idle", () => {
+      map.fitBounds(bounds, 80);
+      // Step 3: enforce a minimum zoom so small polygons stay close
+      google.maps.event.addListenerOnce(map, "idle", () => {
+        if ((map.getZoom() ?? 0) > 15) map.setZoom(15);
+      });
+    });
   };
 
   const startEdit = (hub: Hub, e: React.MouseEvent) => {
@@ -216,7 +245,12 @@ export default function HubMappingPage() {
     if (mapRef.current && isLoaded) {
       const bounds = new google.maps.LatLngBounds();
       hub.polygon.forEach((p) => bounds.extend(new google.maps.LatLng(p.lat, p.lng)));
-      mapRef.current.fitBounds(bounds, 80);
+      const map = mapRef.current;
+      const center = bounds.getCenter();
+      map.panTo(center);
+      google.maps.event.addListenerOnce(map, "idle", () => {
+        map.fitBounds(bounds, 80);
+      });
     }
   };
 
@@ -401,15 +435,16 @@ export default function HubMappingPage() {
                 return (
                   <div
                     key={hub._id}
-                    className={`rounded-2xl border overflow-hidden transition-all duration-150 ${isSelected ? "border-blue-400 shadow-md" : "border-gray-200 hover:border-gray-300 hover:shadow-sm"}`}
+                    onClick={() => !isEditing && !isConfirmingDelete && focusHub(hub)}
+                    className={`rounded-2xl border overflow-hidden transition-all duration-150 ${!isEditing && !isConfirmingDelete ? "cursor-pointer" : ""} ${isSelected ? "border-blue-400 shadow-md" : "border-gray-200 hover:border-gray-300 hover:shadow-sm"}`}
                   >
                     <div className="h-1 w-full" style={{ backgroundColor: color }} />
                     <div className={`px-4 pt-3 pb-3 ${isSelected ? "bg-blue-50" : "bg-white"}`}>
                       <div className="flex items-start justify-between gap-2">
-                        <button onClick={() => focusHub(hub)} className="flex items-center gap-2 min-w-0">
+                        <div className="flex items-center gap-2 min-w-0">
                           <span className="w-2.5 h-2.5 rounded-full shrink-0 mt-0.5" style={{ backgroundColor: color }} />
                           <span className="text-sm font-semibold text-gray-800 truncate leading-tight">{hub.hubName}</span>
-                        </button>
+                        </div>
                         {!isEditing && !isConfirmingDelete && (
                           <div className="flex items-center gap-1 shrink-0">
                             <button onClick={(e) => startEdit(hub, e)} title="Rename hub" className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition">
@@ -528,18 +563,7 @@ export default function HubMappingPage() {
                 />
               );
             })}
-            {selectedHub && (
-              <InfoWindow position={polygonCenter(selectedHub.polygon)} onCloseClick={() => setSelectedHub(null)}>
-                <div className="text-sm min-w-35">
-                  <p className="font-bold text-gray-800 mb-0.5">{selectedHub.hubName}</p>
-                  {selectedHub.description && (
-                    <p className="text-gray-600 text-xs mb-1">{selectedHub.description}</p>
-                  )}
-                  <p className="text-gray-500 text-xs">{selectedHub.polygon.length} points</p>
-                  <p className="text-gray-500 text-xs">{new Date(selectedHub.createdAt).toLocaleDateString()}</p>
-                </div>
-              </InfoWindow>
-            )}
+
             <DrawingManager
               onLoad={(dm) => { drawingManagerRef.current = dm; }}
               onPolygonComplete={onPolygonComplete}
@@ -549,6 +573,96 @@ export default function HubMappingPage() {
         ) : (
           <div className="flex items-center justify-center h-full text-gray-400 text-sm">Loading map…</div>
         )}
+        {/* ── Info Modal ── */}
+        {selectedHub && !editingId && (
+          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-20 w-72 bg-white rounded-2xl shadow-2xl overflow-visible">
+            {infoModalDeleteConfirm ? (
+              <div className="px-5 py-5 space-y-3">
+                <div className="flex items-center gap-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-red-500 shrink-0" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg>
+                  <p className="text-sm font-semibold text-red-700">Delete &ldquo;{selectedHub.hubName}&rdquo;?</p>
+                </div>
+                <p className="text-xs text-gray-500">This action cannot be undone.</p>
+                <div className="flex gap-2">
+                  <button
+                    disabled={deleteWorking}
+                    onClick={async () => { await handleDelete(selectedHub._id); setInfoModalDeleteConfirm(false); setSelectedHub(null); }}
+                    className="flex-1 bg-red-500 text-white text-sm font-medium py-2 rounded-xl hover:bg-red-600 disabled:opacity-50 transition"
+                  >
+                    {deleteWorking ? "Deleting…" : "Yes, delete"}
+                  </button>
+                  <button onClick={() => setInfoModalDeleteConfirm(false)} className="flex-1 border border-gray-200 text-gray-500 text-sm font-medium py-2 rounded-xl hover:bg-gray-50 transition">Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* Header */}
+                <div className="flex items-center justify-between px-5 pt-4 pb-3">
+                  <h3 className="text-base font-bold text-gray-900 truncate pr-2">{selectedHub.hubName}</h3>
+                  <button onClick={() => { setSelectedHub(null); setInfoModalDeleteConfirm(false); }} className="w-7 h-7 flex items-center justify-center rounded-full text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition text-lg leading-none">&times;</button>
+                </div>
+
+                {/* Divider */}
+                <div className="border-t border-gray-100" />
+
+                {/* Description body */}
+                <div className="px-5 py-3 min-h-14">
+                  {selectedHub.description ? (
+                    <p className="text-sm text-gray-600 leading-relaxed">{selectedHub.description}</p>
+                  ) : (
+                    <p className="text-sm text-gray-300 italic">No description</p>
+                  )}
+                </div>
+
+                {/* Divider */}
+                <div className="border-t border-gray-100" />
+
+                {/* Footer: stats + actions */}
+                <div className="flex items-center justify-between px-5 py-3">
+                  <div className="flex items-center gap-4">
+                    <span className="flex items-center gap-1 text-xs text-gray-500">
+                      {/* area icon */}
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4h16v16H4z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4l4 4m8 0l4-4M4 20l4-4m8 0l4 4" />
+                      </svg>
+                      {computeAreaKm2(selectedHub.polygon)} km²
+                    </span>
+                    <span className="flex items-center gap-1 text-xs text-gray-500">
+                      {/* perimeter icon */}
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <rect x="3" y="3" width="18" height="18" rx="1" />
+                      </svg>
+                      {computePerimeterKm(selectedHub.polygon)} km
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      title="Edit hub"
+                      onClick={(e) => { startEdit(selectedHub, e); }}
+                      className="w-8 h-8 flex items-center justify-center rounded-full text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" /></svg>
+                    </button>
+                    <button
+                      title="Delete hub"
+                      onClick={() => setInfoModalDeleteConfirm(true)}
+                      className="w-8 h-8 flex items-center justify-center rounded-full text-gray-400 hover:text-red-500 hover:bg-red-50 transition"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" /></svg>
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+            {/* Triangle pointer */}
+            <div
+              className="absolute -bottom-2.75 left-1/2 -translate-x-1/2"
+              style={{ width: 0, height: 0, borderLeft: "12px solid transparent", borderRight: "12px solid transparent", borderTop: "12px solid white" }}
+            />
+          </div>
+        )}
+
         {!panelOpen && mode === "view" && (
           <button onClick={enterCreateMode} className="md:hidden fixed bottom-20 right-4 z-30 bg-blue-600 text-white text-sm font-semibold px-5 py-3 rounded-full shadow-lg flex items-center gap-2 active:scale-95 transition-transform">
             <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
